@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "mosaforge": {
+      "command": "python3",
+      "args": ["-m", "mosaforge.cli", "mcp"]
+    }
+  }
+}

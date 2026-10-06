@@ -1,0 +1,19 @@
+[project]
+name = "mosaforge"
+version = "0.1.0"
+description = "Local-first, model-agnostic personal AI system: routing, agents, memory, evaluation."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+# Deliberately zero runtime dependencies for the POC: stdlib HTTP, sqlite3 (FTS5), tomllib.
+dependencies = []
+
+[project.scripts]
+mosaforge = "mosaforge.cli:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["mosaforge*"]

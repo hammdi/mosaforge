@@ -1,0 +1,9 @@
+# Third-party sources are pulled for inspection only; pinned commits are listed in upstream/MANIFEST.md
+upstream/*
+!upstream/MANIFEST.md
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+bench-results/
+*.egg-info/

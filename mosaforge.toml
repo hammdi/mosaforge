@@ -1,0 +1,128 @@
+# MosaForge configuration (POC). Copy to ~/.mosaforge/mosaforge.toml to override per machine.
+
+[paths]
+data_dir = "~/.mosaforge"   # memory + experience DB. Never inside the repo.
+workspace = "."             # the only directory agents' file tools may touch
+
+[router]
+# Local decision model served by Ollama's /v1/systemone (TypeSafe Jev-compatible API, Ollama >= 0.35).
+decision_model = "tev1:0.8b"
+decision_provider = "ollama-local"
+min_confidence = 0.45        # below this the router falls back to keyword heuristics
+allow_cloud = false          # privacy default: nothing leaves the LAN unless enabled
+max_attempts = 3             # initial attempt + escalations
+# Starting tier per category. Escalation walks up tiers on verification failure.
+# code starts at tier 1: in the 2026-10-04 suite qwen3.5:4b matched qwen2.5-coder:7b on code
+# and beat it overall (93% vs 50%). See BENCHMARKS.md §2.
+category_tier = { simple = 1, summarize = 1, code = 1, complex_code = 3, reasoning = 1 }
+# Learned adjustment: if a (category, model) pair has >= min_samples runs and its
+# verified pass rate is below this, start one tier higher.
+experience_min_samples = 5
+experience_min_pass_rate = 0.6
+# Node choice per category (provider ids, preference order). Among usable nodes the least busy wins,
+# so with 2 tasks in flight work spreads across Mac and Dell. Omitted category = the model's providers order.
+# node_policy = { summarize = ["dell", "ollama-local"] }
+
+[verify]
+judge_model = "tev1:0.8b"    # cheap gate for non-code answers (a heuristic, measured in BENCHMARKS.md)
+judge_threshold = 0.5
+command_timeout_s = 60
+# Commands the coding agent and the verifier may run (prefix match, no shell).
+allowed_commands = ["python -m py_compile", "python -m pytest", "python -m unittest", "python3 -m py_compile", "python3 -m pytest", "python3 -m unittest"]
+
+[providers.ollama-local]
+type = "ollama"
+base_url = "http://127.0.0.1:11434"
+location = "local"
+
+[providers.dell]
+type = "worker"                          # MosaForge worker on the Dell (mosaforge worker)
+base_url = "http://dell.local:8765"
+token_env = "MOSAFORGE_WORKER_TOKEN"
+location = "lan"
+enabled = false
+allow_secret = false                     # privacy=secret tasks stay on the Mac unless set true
+
+[providers.claude]
+type = "claude_cli"                      # uses the local `claude -p` login; no API key stored by MosaForge
+location = "cloud"
+enabled = false
+timeout_s = 300
+
+[[models]]
+id = "local-small"
+name = "qwen3.5:4b"
+providers = ["ollama-local", "dell"]
+tier = 1
+think = false
+tags = ["general"]
+
+[[models]]
+id = "local-coder"
+name = "qwen2.5-coder:7b"
+providers = ["ollama-local", "dell"]
+tier = 2
+tags = ["code"]
+ladder = false   # kept for forced use only: lost to local-small on the suite (BENCHMARKS.md §2)
+
+[[models]]
+id = "local-strong"
+name = "qwen3.5:9b"
+providers = ["ollama-local", "dell"]
+tier = 3
+think = false   # thinking + tools on the 9B: 487 s vs ~100 s for the suite, wandering, one empty answer (BENCHMARKS.md §2.3)
+num_ctx = 16384
+tags = ["general", "code", "reasoning"]
+
+[[models]]
+id = "claude-sonnet"
+name = "sonnet"
+providers = ["claude"]
+tier = 4
+cloud = true
+tools = false
+cost_in_per_mtok = 3.0
+cost_out_per_mtok = 15.0
+tags = ["general", "code", "reasoning"]
+
+# ---------------------------------------------------------------------------------------------
+# Resource Manager (resources.py): where a chosen model should run. Perf numbers say where they
+# come from: "measured …" (bench on that node), "estimated …", "simulated …" (placeholder until
+# the node is benchmarked). Confidence of a placement drops with less trustworthy numbers.
+[resources]
+background_latency_weight = 0.3   # background work cares less about latency than interactive work
+protect_normal = 0.6              # penalty (fraction of compute time) for background work on the interactive node
+protect_warn = 2.0                # same, when the interactive node's memory pressure is "warn"
+evicted_model_reload_weight = 1.0 # cost of evicting a loaded model = its reload time x this
+interactive_queue_cap_s = 15.0    # batches: max seconds of background work queued on the interactive node
+
+[resources.nodes.ollama-local]
+location = "local"
+role = "interactive"              # the user's machine: keep it responsive
+# Headroom = macOS available memory (kern.memorystatus_level, includes reclaimable/compressed pages)
+# minus this reserve. 16 GB Mac: 4B + router kept pressure normal; the 9B pushed it to ~15.1 GB used
+# + 5.8 GB swap. A 2 GB reserve admits a 3.3 GB model at ~50% available and refuses a 6 GB one.
+reserve_gb = 2.0
+slots = 1
+allow_secret = true
+perf."qwen3.5:4b"       = { gen_tok_s = 29.2, prefill_tok_s = 363, load_s = 1.1, resident_gb = 3.34, source = "measured 2026-10-04" }
+perf."qwen2.5-coder:7b" = { gen_tok_s = 20.0, prefill_tok_s = 226, load_s = 0.9, resident_gb = 4.98, source = "measured 2026-10-04" }
+perf."qwen3.5:9b"       = { gen_tok_s = 15.6, prefill_tok_s = 197, load_s = 4.4, resident_gb = 6.07, source = "measured 2026-10-04" }
+perf."tev1:0.8b"        = { gen_tok_s = 100, prefill_tok_s = 2000, load_s = 1.3, resident_gb = 0.81, source = "measured 2026-10-04" }
+
+[resources.nodes.dell]
+simulated = true                  # replace with real /v1/status + bench numbers once deployed
+location = "lan"
+role = "batch"
+healthy = true
+ram_total_gb = 16.0
+ram_used_gb = 3.5                 # assumption: idle Windows laptop
+reserve_gb = 2.0
+slots = 1
+rtt_ms = 5.0                      # assumption: Wi-Fi LAN (Mac -> gateway measured 2.9 ms on 2026-10-06)
+bandwidth_mbps = 200
+allow_secret = false
+installed = ["qwen3.5:4b", "qwen3.5:9b"]
+# CPU-only estimates: decode ~ memory bandwidth (~25 GB/s effective DDR4) / resident size
+perf."qwen3.5:4b" = { gen_tok_s = 7.0, prefill_tok_s = 45, load_s = 3.0, resident_gb = 3.4, source = "simulated" }
+perf."qwen3.5:9b" = { gen_tok_s = 3.5, prefill_tok_s = 20, load_s = 6.0, resident_gb = 6.2, source = "simulated" }
